@@ -10,20 +10,26 @@ from ultralytics import YOLO
 
 model = None  # Global model
 
-def ffmpeg_frame_reader(rtsp_url):
-    """Generator that yields frames from an RTSP stream using ffmpeg at 1 FPS with GPU decoding."""
+def ffmpeg_frame_reader(rtsp_url, width=1280, height=736, fps=1):
+    """
+    Generator that yields frames from an RTSP stream using ffmpeg at the desired FPS and resolution.
+    """
     process = (
         ffmpeg
-        .input(rtsp_url)
-        .output('pipe:', format='rawvideo', pix_fmt='rgb24')
-        .global_args('-hwaccel', 'cuda')  # <-- Enable GPU decoding (NVIDIA)
+        .input(rtsp_url, rtsp_transport='tcp')
+        .output(
+            'pipe:',
+            format='rawvideo',
+            pix_fmt='rgb24',
+            vf=f'fps={fps},scale={width}:{height}'
+        )
+        .global_args('-hwaccel', 'cuda')
         .run_async(pipe_stdout=True, pipe_stderr=True)
     )
-    width, height = 1280, 736  # Set to your engine's input size
     frame_size = width * height * 3
     while True:
         in_bytes = process.stdout.read(frame_size)
-        if not in_bytes:
+        if not in_bytes or len(in_bytes) < frame_size:
             break
         frame = np.frombuffer(in_bytes, np.uint8).reshape([height, width, 3])
         yield frame
@@ -33,7 +39,6 @@ def producer(rtsp_url, frame_queue):
     for frame in ffmpeg_frame_reader(rtsp_url):
         if not frame_queue.full():
             frame_queue.put(frame)
-    # Remove time.sleep(1) here
 
 def consumer(frame_queue, cam_name):
     global model
