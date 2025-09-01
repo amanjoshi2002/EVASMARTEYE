@@ -38,12 +38,14 @@ def ffmpeg_frame_reader(rtsp_url, width=1280, height=736, fps=1):
         # Remove this line: time.sleep(1)  # Let FFmpeg handle timing
 
 
-def producer(rtsp_url, frame_queue):
+def producer(rtsp_url, frame_queue, stats, cam_name, lock):
     for frame in ffmpeg_frame_reader(rtsp_url):
         if not frame_queue.full():
             frame_queue.put(frame)
+            with lock:
+                stats[cam_name]["frames_received"] += 1
 
-def consumer(frame_queue, cam_name):
+def consumer(frame_queue, cam_name, stats, lock):
     """
     Consumer function that processes frames with duplicate detection.
     """
@@ -53,7 +55,10 @@ def consumer(frame_queue, cam_name):
     total_frames = 0
     start_time = time.time()
     save_dir = f"processed_images/{cam_name}"
+    log_dir = f"logs/{cam_name}"
     os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "frame_log.json")
     
     last_frame_hash = None
     last_timestamp = 0
@@ -78,7 +83,7 @@ def consumer(frame_queue, cam_name):
                 continue
             
             # Hash-based duplicate detection SECOND
-            frame_sample = frame[::20, ::20].tobytes()  # Even more aggressive sampling
+            frame_sample = frame[::20, ::20].tobytes()
             frame_hash = hash(frame_sample)
             
             if frame_hash == last_frame_hash:
@@ -105,20 +110,25 @@ def consumer(frame_queue, cam_name):
             
             frame_queue.task_done()
             
-            # Rest of your reporting code...
+            # Reporting every minute
             current_time = time.time()
             if current_time - start_time >= 60:
+                with lock:
+                    frames_received = stats[cam_name]["frames_received"]
+                    stats[cam_name]["frames_received"] = 0  # reset for next minute
+
                 report = {
                     "camera": cam_name,
+                    "frames_received_last_minute": frames_received,
                     "frames_processed_last_minute": frame_count,
                     "duplicates_skipped_last_minute": duplicate_count,
-                    "total_frames_received": total_frames,
+                    "total_frames_received_by_consumer": total_frames,
                     "duplicate_rate_percent": round((duplicate_count / max(total_frames, 1)) * 100, 2),
                     "timestamp": int(current_time)
                 }
                 
                 log_entry = json.dumps(report) + "\n"
-                with open("frame_log.json", "a") as f:
+                with open(log_path, "a") as f:
                     f.write(log_entry)
                 
                 print(f"[{cam_name}] Report: {json.dumps(report)}")
@@ -141,8 +151,11 @@ def run_detection(cameras):
     global model
     model = YOLO("yolo11m16.engine")  # Load once globally
 
+    stats = {}
+    lock = threading.Lock()
     for cam in cameras:
+        stats[cam.name] = {"frames_received": 0}
         rtsp_url = f"rtsp://admin:private123@{cam.ip}:554/cam/realmonitor?channel=1&subtype=0"
         frame_queue = queue.Queue(maxsize=10)
-        threading.Thread(target=producer, args=(rtsp_url, frame_queue), daemon=True).start()
-        threading.Thread(target=consumer, args=(frame_queue, cam.name), daemon=True).start()
+        threading.Thread(target=producer, args=(rtsp_url, frame_queue, stats, cam.name, lock), daemon=True).start()
+        threading.Thread(target=consumer, args=(frame_queue, cam.name, stats, lock), daemon=True).start()
