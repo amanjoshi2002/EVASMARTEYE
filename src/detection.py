@@ -53,6 +53,7 @@ def consumer(frame_queue, cam_name, stats, lock):
     frame_count = 0
     duplicate_count = 0
     total_frames = 0
+    total_processing_time = 0.0  # Track total processing time for averaging
     start_time = time.time()
     save_dir = f"processed_images/{cam_name}"
     log_dir = f"logs/{cam_name}"
@@ -96,11 +97,16 @@ def consumer(frame_queue, cam_name, stats, lock):
             last_frame_hash = frame_hash
             last_timestamp = current_timestamp
             
-            # Process the frame
+            # Measure processing time
+            process_start = time.time()
             results = model(frame, imgsz=(736, 1280))
+            process_end = time.time()
+            processing_time = process_end - process_start
+            total_processing_time += processing_time
+            
             frame_count += 1
             
-            print(f"[{cam_name}] Processed frame {frame_count} at {current_timestamp:.2f} (Skipped {duplicate_count} duplicates)")
+            print(f"[{cam_name}] Processed frame {frame_count} at {current_timestamp:.2f} (Skipped {duplicate_count} duplicates, Processing time: {processing_time:.3f}s)")
             
             # Draw labels and save
             labeled_img = results[0].plot()
@@ -117,6 +123,10 @@ def consumer(frame_queue, cam_name, stats, lock):
                     frames_received = stats[cam_name]["frames_received"]
                     stats[cam_name]["frames_received"] = 0  # reset for next minute
 
+                avg_processing_time = (
+                    round(total_processing_time / frame_count, 4) if frame_count > 0 else 0.0
+                )
+
                 report = {
                     "camera": cam_name,
                     "frames_received_last_minute": frames_received,
@@ -124,6 +134,7 @@ def consumer(frame_queue, cam_name, stats, lock):
                     "duplicates_skipped_last_minute": duplicate_count,
                     "total_frames_received_by_consumer": total_frames,
                     "duplicate_rate_percent": round((duplicate_count / max(total_frames, 1)) * 100, 2),
+                    "avg_processing_time_sec": avg_processing_time,
                     "timestamp": int(current_time)
                 }
                 
@@ -135,7 +146,7 @@ def consumer(frame_queue, cam_name, stats, lock):
                 
                 frame_count = 0
                 duplicate_count = 0
-                total_frames = 0
+                total_processing_time = 0.0
                 start_time = current_time
                 
         except queue.Empty:
